@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowRight, ArrowLeft, CheckCircle2, Circle } from 'lucide-react';
+import { ArrowRight, ArrowLeft, CheckCircle2, Circle, Highlighter } from 'lucide-react';
 import { TestData, UserAnswers } from '../../types';
 
 interface Props {
@@ -10,6 +10,11 @@ interface Props {
 }
 
 type Part = 'part1' | 'part2' | 'part3';
+
+interface HighlightRange {
+  start: number;
+  end: number;
+}
 
 const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
   const [currentPart, setCurrentPart] = useState<Part>('part1');
@@ -22,11 +27,109 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
     part3: {}
   });
 
+  const [highlightMode, setHighlightMode] = useState(true);
+  const [highlights, setHighlights] = useState<Record<string, HighlightRange[]>>({});
+  const textRefMap = useRef<Record<string, HTMLElement | null>>({});
+
   const handleAnswer = (part: Part, id: number, value: string) => {
     setAnswers(prev => ({
       ...prev,
       [part]: { ...prev[part], [id]: value }
     }));
+  };
+
+  const handleTextSelection = (textId: string) => {
+    if (!highlightMode) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.toString().length === 0) return;
+
+    const element = textRefMap.current[textId];
+    if (!element) return;
+
+    try {
+      // Get the selected text
+      const selectedText = selection.toString();
+      const elementText = element.innerText || element.textContent || '';
+      
+      // Find the exact position of selected text in element
+      const start = elementText.indexOf(selectedText);
+      if (start === -1) return; // Text not found
+      
+      const end = start + selectedText.length;
+
+      setHighlights(prev => ({
+        ...prev,
+        [textId]: [...(prev[textId] || []), { start, end }]
+      }));
+
+      selection.removeAllRanges();
+    } catch (e) {
+      console.error('Error highlighting text:', e);
+    }
+  };
+
+  const clearHighlights = (textId: string) => {
+    setHighlights(prev => ({
+      ...prev,
+      [textId]: []
+    }));
+  };
+
+  const renderHighlightedText = (text: string, textId: string) => {
+    const textHighlights = highlights[textId] || [];
+    
+    if (textHighlights.length === 0) {
+      return text;
+    }
+
+    // Sort and merge overlapping highlights
+    const sorted = [...textHighlights].sort((a, b) => a.start - b.start);
+    const merged: HighlightRange[] = [];
+
+    sorted.forEach(hl => {
+      if (merged.length === 0) {
+        merged.push(hl);
+      } else {
+        const last = merged[merged.length - 1];
+        if (hl.start <= last.end) {
+          // Overlapping or adjacent - merge them
+          last.end = Math.max(last.end, hl.end);
+        } else {
+          merged.push(hl);
+        }
+      }
+    });
+
+    // Create array to track which parts are highlighted
+    const parts: { text: string; highlighted: boolean }[] = [];
+    let lastEnd = 0;
+
+    merged.forEach(hl => {
+      if (hl.start > lastEnd) {
+        parts.push({ text: text.substring(lastEnd, hl.start), highlighted: false });
+      }
+      parts.push({ text: text.substring(hl.start, hl.end), highlighted: true });
+      lastEnd = hl.end;
+    });
+
+    if (lastEnd < text.length) {
+      parts.push({ text: text.substring(lastEnd), highlighted: false });
+    }
+
+    return (
+      <span>
+        {parts.map((part, idx) =>
+          part.highlighted ? (
+            <span key={idx} className="bg-yellow-300">
+              {part.text}
+            </span>
+          ) : (
+            <span key={idx}>{part.text}</span>
+          )
+        )}
+      </span>
+    );
   };
 
   // Navigation Logic
@@ -66,6 +169,7 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
   // Renderers
   const renderPart1 = () => {
     const q = data.part1[p1Index];
+    const textId = `part1-q${q.id}`;
     return (
       <motion.div 
         key={`p1-${q.id}`}
@@ -78,9 +182,23 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
           {t.practice.part1_title} ({p1Index + 1}/{data.part1.length})
         </div>
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
-          <h3 className="text-xl font-medium text-slate-900 mb-6 leading-relaxed">
-            {q.question}
-          </h3>
+          <div className="flex justify-between items-start mb-6 gap-4">
+            <h3 
+              ref={(el) => { textRefMap.current[textId] = el; }}
+              onMouseUp={() => handleTextSelection(textId)}
+              className={`text-xl font-medium text-slate-900 leading-relaxed flex-1 ${highlightMode ? 'cursor-text select-text' : ''}`}
+            >
+              {renderHighlightedText(q.question, textId)}
+            </h3>
+            {highlightMode && highlights[textId]?.length > 0 && (
+              <button
+                onClick={() => clearHighlights(textId)}
+                className="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100 whitespace-nowrap mt-1"
+              >
+                Clear Highlights
+              </button>
+            )}
+          </div>
           <div className="space-y-3">
             {q.options.map((opt, idx) => {
                const isSelected = answers.part1[q.id] === opt;
@@ -112,6 +230,7 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
   const renderPart2 = () => {
     // We need to split the passage by markers like [1], [2] etc.
     const parts = data.part2.passage.split(/(\[\d+\])/g);
+    const textId = 'part2-passage';
     
     return (
       <motion.div 
@@ -120,11 +239,23 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
         animate={{ opacity: 1, x: 0 }}
         className="w-full max-w-3xl mx-auto"
       >
-        <div className="mb-4 text-sm font-bold text-brand-600 uppercase tracking-wider">
-          {t.practice.part2_title}
+        <div className="mb-4 text-sm font-bold text-brand-600 uppercase tracking-wider flex justify-between items-center">
+          <span>{t.practice.part2_title}</span>
+          {highlightMode && (
+            <button
+              onClick={() => clearHighlights(textId)}
+              className="text-xs px-2 py-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 flex items-center gap-1"
+            >
+              Clear Highlights
+            </button>
+          )}
         </div>
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
-            <p className="text-lg leading-loose text-slate-800 font-serif">
+            <div
+              ref={(el) => { textRefMap.current[textId] = el; }}
+              onMouseUp={() => handleTextSelection(textId)}
+              className={`text-lg leading-loose text-slate-800 font-serif ${highlightMode ? 'cursor-text select-text' : ''}`}
+            >
                 {parts.map((part, index) => {
                     const match = part.match(/\[(\d+)\]/);
                     if (match) {
@@ -152,13 +283,14 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
                     }
                     return <span key={index}>{part}</span>;
                 })}
-            </p>
+            </div>
         </div>
       </motion.div>
     );
   };
 
   const renderPart3 = () => {
+    const textId = 'part3-passage';
     return (
       <motion.div 
         key="part3"
@@ -167,11 +299,23 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
         className="w-full max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8"
       >
         <div className="lg:h-[calc(100vh-200px)] lg:overflow-y-auto lg:sticky lg:top-8 pr-2 custom-scrollbar">
-            <div className="mb-4 text-sm font-bold text-brand-600 uppercase tracking-wider">
-             {t.practice.part3_passage}
+            <div className="mb-4 text-sm font-bold text-brand-600 uppercase tracking-wider flex justify-between items-center">
+              <span>{t.practice.part3_passage}</span>
+              {highlightMode && highlights[textId]?.length > 0 && (
+                <button
+                  onClick={() => clearHighlights(textId)}
+                  className="text-xs px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100 whitespace-nowrap"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-            <div className="bg-slate-50 rounded-2xl p-6 border border-slate-200 font-serif text-lg leading-relaxed text-slate-800">
-                {data.part3.passage}
+            <div
+              ref={(el) => { textRefMap.current[textId] = el; }}
+              onMouseUp={() => handleTextSelection(textId)}
+              className={`bg-slate-50 rounded-2xl p-6 border border-slate-200 font-serif text-lg leading-relaxed text-slate-800 ${highlightMode ? 'cursor-text select-text' : ''}`}
+            >
+                {renderHighlightedText(data.part3.passage, textId)}
             </div>
         </div>
         
@@ -222,8 +366,27 @@ const PracticeStep: React.FC<Props> = ({ data, onComplete, t }) => {
                 <span className="text-slate-300">/</span>
                 <span className={currentPart === 'part3' ? 'text-brand-600 font-bold' : ''}>Part 3</span>
             </div>
-            <div className="w-32 h-2 bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-brand-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => {
+                  setHighlightMode(!highlightMode);
+                  if (!highlightMode) {
+                    setHighlights({});
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  highlightMode 
+                    ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' 
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+                title="Toggle highlight mode (Drag to select text)"
+              >
+                <Highlighter size={16} />
+                {highlightMode ? 'ON' : 'OFF'}
+              </button>
+              <div className="w-32 h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-brand-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+              </div>
             </div>
         </div>
       </div>
